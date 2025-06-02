@@ -6,7 +6,17 @@ import joblib
 import xgboost as xgb
 from sklearn.base import BaseEstimator, TransformerMixin
 import numpy as np
+from google.cloud import bigquery
+from google.cloud.exceptions import NotFound
+from google.oauth2 import service_account
+from datetime import datetime
 import sys
+import os
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Custom transformer definitions
 class GroupMeanDifference(BaseEstimator, TransformerMixin):
@@ -122,7 +132,7 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return X.drop(columns=self.columns_to_drop, errors='ignore')
 
-# Register custom classes in __main__ for unpickling
+# Register custom classes for unpickling
 custom_classes = [
     GroupMeanDifference,
     LogDensityVolumeCalculator,
@@ -132,26 +142,58 @@ custom_classes = [
     ColumnDropper
 ]
 for cls in custom_classes:
-    cls.__module__ = '__main__'  # Explicitly set the module to __main__
+    cls.__module__ = '__main__'
     setattr(sys.modules['__main__'], cls.__name__, cls)
 
-# FastAPI app setup
-app = FastAPI()
+# BigQuery setup
+credentials_path = '/home/barshilerohit1785/circular-hawk-459707-b8-355d238d7679.json'
+if not os.path.exists(credentials_path):
+    logger.error(f"Service account key file not found at: {credentials_path}")
+    raise FileNotFoundError(f"Service account key file not found: {credentials_path}")
 
+credentials = service_account.Credentials.from_service_account_file(credentials_path)
+bigquery_client = bigquery.Client(credentials=credentials, project='circular-hawk-459707-b8')
+
+# Create table if it doesn't exist
+def create_table_if_not_exists():
+    dataset_id = 'anomaly_detection'
+    table_id = 'predictions'
+    full_table_id = f"{bigquery_client.project}.{dataset_id}.{table_id}"
+    try:
+        bigquery_client.get_table(full_table_id)
+        logger.info(f"Table {full_table_id} already exists.")
+    except NotFound:
+        schema = [
+            bigquery.SchemaField("product_url", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
+            bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+        ]
+        dataset_ref = bigquery_client.dataset(dataset_id)
+        try:
+            bigquery_client.get_dataset(dataset_ref)
+        except NotFound:
+            dataset = bigquery.Dataset(dataset_ref)
+            bigquery_client.create_dataset(dataset)
+            logger.info(f"Created dataset {dataset_id}")
+        table = bigquery.Table(full_table_id, schema=schema)
+        table = bigquery_client.create_table(table)
+        logger.info(f"Created table {full_table_id}")
+
+create_table_if_not_exists()
+
+# FastAPI app
+app = FastAPI()
 pipeline = None
 model = None
 
 @app.on_event("startup")
-async def load_models():
+def load_models():
     global pipeline, model
-    try:
-        pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
-        model = xgb.XGBClassifier()
-        model.load_model('xgb_model.json')
-        print("Models loaded successfully")
-    except Exception as e:
-        print(f"Error loading models: {e}")
-        raise
+    pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
+    model = xgb.XGBClassifier()
+    model.load_model('xgb_model.json')
+    logger.info("Models loaded successfully")
 
 class ProductData(BaseModel):
     product_url: str
@@ -177,37 +219,60 @@ class ProductData(BaseModel):
     diff_weight: float
 
 @app.post("/predict")
-async def predict(products: List[ProductData]):
-    data = [p.dict() for p in products]
-    df = pd.DataFrame(data)
-    # Rename columns to match pipeline expectations
-    column_mapping = {
-        'product_url': 'Product URL',
-        'hierarchy': 'Hierarchy',
-        'product_name': 'Product Name',
-        'detail_product_title': 'Detail Product Title',
-        'price_in_dollar': 'Price In Dollar',
-        'asin': 'ASIN',
-        'brand_name': 'BRAND Name',
-        'length': 'Length',
-        'width': 'Width',
-        'height': 'Height',
-        'final_weights_in_grams': 'Final Weights in Grams',
-        'original_price_in_dollar': 'Original Price In Dollar',
-        'original_length': 'Original Length',
-        'original_width': 'Original Width',
-        'original_height': 'Original Height',
-        'original_final_weights_in_grams': 'Original Final Weights in Grams',
-        'diff_price': 'Diff Price',
-        'diff_length': 'Diff Length',
-        'diff_width': 'Diff Width',
-        'diff_height': 'Diff Height',
-        'diff_weight': 'Diff Weight'
-    }
-    df.rename(columns=column_mapping, inplace=True)
-    df_processed = pipeline.transform(df)
-    predictions = model.predict(df_processed)
-    probabilities = model.predict_proba(df_processed)[:, 1]
-    labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
-    results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
-    return {"results": results}
+def predict(products: List[ProductData]):
+    try:
+        data = [p.dict() for p in products]
+        df = pd.DataFrame(data)
+        column_mapping = {
+            'product_url': 'Product URL',
+            'hierarchy': 'Hierarchy',
+            'product_name': 'Product Name',
+            'detail_product_title': 'Detail Product Title',
+            'price_in_dollar': 'Price In Dollar',
+            'asin': 'ASIN',
+            'brand_name': 'BRAND Name',
+            'length': 'Length',
+            'width': 'Width',
+            'height': 'Height',
+            'final_weights_in_grams': 'Final Weights in Grams',
+            'original_price_in_dollar': 'Original Price In Dollar',
+            'original_length': 'Original Length',
+            'original_width': 'Original Width',
+            'original_height': 'Original Height',
+            'original_final_weights_in_grams': 'Original Final Weights in Grams',
+            'diff_price': 'Diff Price',
+            'diff_length': 'Diff Length',
+            'diff_width': 'Diff Width',
+            'diff_height': 'Diff Height',
+            'diff_weight': 'Diff Weight'
+        }
+        df.rename(columns=column_mapping, inplace=True)
+        df_processed = pipeline.transform(df)
+        predictions = model.predict(df_processed)
+        probabilities = model.predict_proba(df_processed)[:, 1]
+        labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
+        results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
+
+        # Prepare data for BigQuery
+        bq_rows = [
+            {
+                "product_url": product.product_url,
+                "prediction": result["prediction"],
+                "probability": result["probability"],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            for product, result in zip(products, results)
+        ]
+
+        # Insert into BigQuery
+        table_id = f"{bigquery_client.project}.anomaly_detection.predictions"
+        errors = bigquery_client.insert_rows_json(table_id, bq_rows)
+        if errors:
+            logger.error(f"Errors inserting rows into BigQuery: {errors}")
+        else:
+            logger.info(f"Successfully inserted {len(bq_rows)} rows into {table_id}")
+
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Prediction endpoint error: {str(e)}")
+        raise
