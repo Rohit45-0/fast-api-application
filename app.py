@@ -6,12 +6,9 @@ import joblib
 import xgboost as xgb
 from sklearn.base import BaseEstimator, TransformerMixin
 import numpy as np
-from google.cloud import bigquery
-from google.oauth2 import service_account
-from datetime import datetime
-import os
+import sys
 
-# Custom transformer classes
+# Custom transformer definitions
 class GroupMeanDifference(BaseEstimator, TransformerMixin):
     def __init__(self, group_col, value_col, output_col=None):
         self.group_col = group_col
@@ -125,7 +122,7 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return X.drop(columns=self.columns_to_drop, errors='ignore')
 
-# Set __module__ for custom classes to '__main__' for consistent pickling
+# Register custom classes in __main__ for unpickling
 custom_classes = [
     GroupMeanDifference,
     LogDensityVolumeCalculator,
@@ -135,33 +132,26 @@ custom_classes = [
     ColumnDropper
 ]
 for cls in custom_classes:
-    cls.__module__ = '__main__'
+    cls.__module__ = '__main__'  # Explicitly set the module to __main__
+    setattr(sys.modules['__main__'], cls.__name__, cls)
 
-# Path to the service account key file
-credentials_path = '/home/barshilerohit1785/circular-hawk-459707-b8-355d238d7679.json'
-
-# Check if the credentials file exists
-if not os.path.exists(credentials_path):
-    raise FileNotFoundError(f"Service account key file not found: {credentials_path}")
-
-# Load credentials explicitly
-credentials = service_account.Credentials.from_service_account_file(credentials_path)
-
-# Initialize BigQuery client with explicit credentials
-bigquery_client = bigquery.Client(credentials=credentials)
-
-# FastAPI app
+# FastAPI app setup
 app = FastAPI()
 
 pipeline = None
 model = None
 
 @app.on_event("startup")
-def load_models():
+async def load_models():
     global pipeline, model
-    pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
-    model = xgb.XGBClassifier()
-    model.load_model('xgb_model.json')
+    try:
+        pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
+        model = xgb.XGBClassifier()
+        model.load_model('xgb_model.json')
+        print("Models loaded successfully")
+    except Exception as e:
+        print(f"Error loading models: {e}")
+        raise
 
 class ProductData(BaseModel):
     product_url: str
@@ -187,9 +177,10 @@ class ProductData(BaseModel):
     diff_weight: float
 
 @app.post("/predict")
-def predict(products: List[ProductData]):
+async def predict(products: List[ProductData]):
     data = [p.dict() for p in products]
     df = pd.DataFrame(data)
+    # Rename columns to match pipeline expectations
     column_mapping = {
         'product_url': 'Product URL',
         'hierarchy': 'Hierarchy',
@@ -219,22 +210,4 @@ def predict(products: List[ProductData]):
     probabilities = model.predict_proba(df_processed)[:, 1]
     labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
     results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
-
-    # Prepare data for BigQuery
-    bq_rows = [
-        {
-            "product_url": product.product_url,
-            "prediction": result["prediction"],
-            "probability": result["probability"],
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        for product, result in zip(products, results)
-    ]
-
-    # Insert into BigQuery
-    table_id = f"{bigquery_client.project}.anomaly_detection.predictions"
-    errors = bigquery_client.insert_rows_json(table_id, bq_rows)
-    if errors:
-        print(f"Encountered errors while inserting rows: {errors}")
-
     return {"results": results}
