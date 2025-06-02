@@ -7,11 +7,9 @@ import xgboost as xgb
 from sklearn.base import BaseEstimator, TransformerMixin
 import numpy as np
 from google.cloud import bigquery
+from google.oauth2 import service_account
 from datetime import datetime
 import os
-
-# Set the path to the service account key for BigQuery authentication
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'service-account-key.json'
 
 # Custom transformer classes
 class GroupMeanDifference(BaseEstimator, TransformerMixin):
@@ -139,8 +137,18 @@ custom_classes = [
 for cls in custom_classes:
     cls.__module__ = 'app'
 
-# BigQuery client
-bigquery_client = bigquery.Client()
+# Path to the service account key file
+credentials_path = '/home/barshilerohit1785/circular-hawk-459707-b8-355d238d7679.json'
+
+# Check if the credentials file exists
+if not os.path.exists(credentials_path):
+    raise FileNotFoundError(f"Service account key file not found: {credentials_path}")
+
+# Load credentials explicitly
+credentials = service_account.Credentials.from_service_account_file(credentials_path)
+
+# Initialize BigQuery client with explicit credentials
+bigquery_client = bigquery.Client(credentials=credentials)
 
 # FastAPI app
 app = FastAPI()
