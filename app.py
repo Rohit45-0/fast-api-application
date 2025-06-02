@@ -125,7 +125,7 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return X.drop(columns=self.columns_to_drop, errors='ignore')
 
-# Set __module__ for custom classes to 'app' for consistent pickling
+# Set __module__ for custom classes to '__main__' for consistent pickling
 custom_classes = [
     GroupMeanDifference,
     LogDensityVolumeCalculator,
@@ -135,7 +135,7 @@ custom_classes = [
     ColumnDropper
 ]
 for cls in custom_classes:
-    cls.__module__ = 'app'
+    cls.__module__ = '__main__'
 
 # Path to the service account key file
 credentials_path = '/home/barshilerohit1785/circular-hawk-459707-b8-355d238d7679.json'
