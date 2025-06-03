@@ -146,7 +146,9 @@ for cls in custom_classes:
     setattr(sys.modules['__main__'], cls.__name__, cls)
 
 # BigQuery setup
-credentials_path = '/home/barshilerohit1785/circular-hawk-459707-b8-355d238d7679.json'
+script_dir = os.path.dirname(os.path.abspath(__file__))
+credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-355d238d7679.json")
+
 if not os.path.exists(credentials_path):
     logger.error(f"Service account key file not found at: {credentials_path}")
     raise FileNotFoundError(f"Service account key file not found: {credentials_path}")
