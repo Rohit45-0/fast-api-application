@@ -147,7 +147,7 @@ for cls in custom_classes:
 
 # BigQuery setup
 script_dir = os.path.dirname(os.path.abspath(__file__))
-credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-355d238d7679.json")
+credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-c8d3eb9236a3.json")
 
 if not os.path.exists(credentials_path):
     logger.error(f"Service account key file not found at: {credentials_path}")
