@@ -16,18 +16,20 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# BigQuery setup
+# BigQuery setup with authentication
 script_dir = os.path.dirname(os.path.abspath(__file__))
 credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-c8d3eb9236a3.json")
 
+# Verify the service account key file exists
 if not os.path.exists(credentials_path):
     logger.error(f"Service account key file not found at: {credentials_path}")
     raise FileNotFoundError(f"Service account key file not found: {credentials_path}")
 
+# Load credentials from the service account key file
 credentials = service_account.Credentials.from_service_account_file(credentials_path)
 bigquery_client = bigquery.Client(credentials=credentials, project='circular-hawk-459707-b8')
 
-# Define the desired schema for the BigQuery table
+# Define the BigQuery table schema (already updated as per your input)
 desired_schema = [
     bigquery.SchemaField("Product URL", "STRING", mode="NULLABLE"),
     bigquery.SchemaField("Hierarchy", "STRING", mode="NULLABLE"),
@@ -51,7 +53,7 @@ desired_schema = [
 ]
 
 def ensure_table_schema():
-    """Create the BigQuery table if it doesn't exist, or update its schema with missing fields."""
+    """Ensure the BigQuery table exists and matches the desired schema."""
     table_id = f"{bigquery_client.project}.anomaly_detection.predictions"
     try:
         table = bigquery_client.get_table(table_id)
@@ -74,21 +76,23 @@ def ensure_table_schema():
         bigquery_client.create_table(table)
         logger.info(f"Created table {table_id} with full schema.")
 
-# FastAPI app
+# Initialize FastAPI app
 app = FastAPI()
 pipeline = None
 model = None
 
 @app.on_event("startup")
 def load_models():
+    """Load the preprocessing pipeline and XGBoost model on startup."""
     global pipeline, model
     pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
     model = xgb.XGBClassifier()
     model.load_model('xgb_model.json')
     logger.info("Models loaded successfully")
-    ensure_table_schema()  # Ensure the schema includes all required fields
+    ensure_table_schema()  # Ensure the table schema is correct on startup
 
 class ProductData(BaseModel):
+    """Pydantic model for incoming product data."""
     product_url: str
     hierarchy: str
     product_name: str
@@ -113,8 +117,9 @@ class ProductData(BaseModel):
 
 @app.post("/predict")
 def predict(products: List[ProductData]):
+    """Endpoint to make predictions and store results in BigQuery."""
     try:
-        # Convert product data to dictionary and rename fields for BigQuery
+        # Define column mapping for BigQuery compatibility
         column_mapping = {
             'product_url': 'Product URL',
             'hierarchy': 'Hierarchy',
@@ -144,12 +149,11 @@ def predict(products: List[ProductData]):
         labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
         results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
 
-        # Prepare data for BigQuery with renamed fields
+        # Prepare rows for BigQuery insertion
         bq_rows = [
             {
-                # Rename fields according to the column_mapping
                 column_mapping[k]: v for k, v in product.dict().items() if k in column_mapping
-            } | {  # Merge with prediction results and timestamp
+            } | {
                 "prediction": result["prediction"],
                 "probability": result["probability"],
                 "timestamp": datetime.utcnow().isoformat(),
@@ -157,11 +161,12 @@ def predict(products: List[ProductData]):
             for product, result in zip(products, results)
         ]
 
-        # Insert into BigQuery
+        # Insert data into BigQuery
         table_id = f"{bigquery_client.project}.anomaly_detection.predictions"
         errors = bigquery_client.insert_rows_json(table_id, bq_rows)
         if errors:
             logger.error(f"Errors inserting rows into BigQuery: {errors}")
+            raise Exception(f"BigQuery insertion failed: {errors}")
         else:
             logger.info(f"Successfully inserted {len(bq_rows)} rows into {table_id}")
 
