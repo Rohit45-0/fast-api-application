@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # BigQuery setup with authentication
 script_dir = os.path.dirname(os.path.abspath(__file__))
-credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-c8d3eb9236a3.json")
+credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-0c4956e384ac.json")
 
 # Verify the service account key file exists
 if not os.path.exists(credentials_path):
