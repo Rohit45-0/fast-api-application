@@ -6,17 +6,135 @@ from typing import List
 import pandas as pd
 import joblib
 import xgboost as xgb
+from sklearn.base import BaseEstimator, TransformerMixin
+import numpy as np
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.oauth2 import service_account
-import logging
+import sys
 import os
+import logging
+import pickle
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# BigQuery setup with authentication
+# Custom transformer definitions
+class GroupMeanDifference(BaseEstimator, TransformerMixin):
+    def __init__(self, group_col, value_col, output_col=None):
+        self.group_col = group_col
+        self.value_col = value_col
+        self.output_col = output_col or f'{value_col}_diff_from_group_mean'
+
+    def fit(self, X, y=None):
+        self.group_means_ = X.groupby(self.group_col)[self.value_col].mean().to_dict()
+        return self
+
+    def transform(self, X):
+        X_ = X.copy()
+        X_[self.output_col] = X_[self.value_col] - X_[self.group_col].map(self.group_means_)
+        return X_
+
+class LogDensityVolumeCalculator(BaseEstimator, TransformerMixin):
+    def __init__(self,
+                 weight_col='Final Weights in Grams',
+                 dim_cols=('Length', 'Width', 'Height'),
+                 log_volume_col='log_volume',
+                 log_density_col='log_density_proxy',
+                 density_col='density_proxy',
+                 log_weight_col='log_final_weight'):
+        self.weight_col = weight_col
+        self.dim_cols = dim_cols
+        self.log_volume_col = log_volume_col
+        self.log_density_col = log_density_col
+        self.density_col = density_col
+        self.log_weight_col = log_weight_col
+        self.epsilon = 1e-6
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X_ = X.copy()
+        volume = X_[self.dim_cols[0]] * X_[self.dim_cols[1]] * X_[self.dim_cols[2]]
+        density_proxy = X_[self.weight_col] / (volume + self.epsilon)
+        X_[self.log_volume_col] = np.log1p(volume + self.epsilon)
+        X_[self.log_density_col] = np.log1p(density_proxy + self.epsilon)
+        X_[self.log_weight_col] = np.log1p(X_[self.weight_col] + self.epsilon)
+        X_[self.density_col] = density_proxy
+        return X_
+
+class PricePerGramCalculator(BaseEstimator, TransformerMixin):
+    def __init__(self,
+                 price_col='Price In Dollar',
+                 weight_col='Final Weights in Grams',
+                 output_col='price_per_gram'):
+        self.price_col = price_col
+        self.weight_col = weight_col
+        self.output_col = output_col
+        self.epsilon = 1e-6
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X_ = X.copy()
+        X_[self.output_col] = X_[self.price_col] / (X_[self.weight_col] + self.epsilon)
+        return X_
+
+class AspectRatioCalculator(BaseEstimator, TransformerMixin):
+    def __init__(self,
+                 length_col='Length',
+                 width_col='Width',
+                 height_col='Height',
+                 epsilon=1e-6):
+        self.length_col = length_col
+        self.width_col = width_col
+        self.height_col = height_col
+        self.epsilon = epsilon
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X_ = X.copy()
+        X_['L_by_W'] = X_[self.length_col] / (X_[self.width_col] + self.epsilon)
+        X_['L_by_H'] = X_[self.length_col] / (X_[self.height_col] + self.epsilon)
+        X_['W_by_H'] = X_[self.width_col] / (X_[self.height_col] + self.epsilon)
+        return X_
+
+class HierarchyAggregator(BaseEstimator, TransformerMixin):
+    def __init__(self,
+                 group_col='Hierarchy',
+                 agg_config=None):
+        self.group_col = group_col
+        self.agg_config = agg_config or {
+            'Hierarchy_Weight_Mean': ('Final Weights in Grams', 'mean'),
+            'Hierarchy_Price_Std': ('Price In Dollar', 'std'),
+            'Hierarchy_Count': ('Hierarchy', 'count')
+        }
+
+    def fit(self, X, y=None):
+        self.agg_df_ = X.groupby(self.group_col).agg(**self.agg_config).reset_index()
+        return self
+
+    def transform(self, X):
+        X_ = X.copy()
+        X_ = X_.merge(self.agg_df_, on=self.group_col, how='left')
+        return X_
+
+class ColumnDropper(BaseEstimator, TransformerMixin):
+    def __init__(self, columns_to_drop=None):
+        self.columns_to_drop = columns_to_drop or []
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return X.drop(columns=self.columns_to_drop, errors='ignore')
+
+# BigQuery setup
 script_dir = os.path.dirname(os.path.abspath(__file__))
 credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-0c4956e384ac.json")
 
@@ -27,7 +145,7 @@ if not os.path.exists(credentials_path):
 credentials = service_account.Credentials.from_service_account_file(credentials_path)
 bigquery_client = bigquery.Client(credentials=credentials, project='circular-hawk-459707-b8')
 
-# Define the BigQuery table schema as per user requirements
+# Define the BigQuery table schema
 desired_schema = [
     bigquery.SchemaField("Product URL", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("Hierarchy", "STRING", mode="NULLABLE"),
@@ -74,23 +192,36 @@ def ensure_table_schema():
         bigquery_client.create_table(table)
         logger.info(f"Created table {table_id} with full schema.")
 
-# Initialize FastAPI app
+# FastAPI app
 app = FastAPI()
 pipeline = None
 model = None
 
 @app.on_event("startup")
 def load_models():
-    """Load the preprocessing pipeline and XGBoost model on startup."""
     global pipeline, model
-    pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
+
+    # Custom unpickler to handle classes defined in app.py
+    class CustomUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if module == "__main__":
+                return globals()[name]  # Use app.py's global namespace
+            return super().find_class(module, name)
+
+    # Load the pipeline using the custom unpickler
+    with open('sklearn_preprocessing_pipeline.pkl', 'rb') as f:
+        unpickler = CustomUnpickler(f)
+        pipeline = unpickler.load()
+
+    # Load the XGBoost model
     model = xgb.XGBClassifier()
     model.load_model('xgb_model.json')
     logger.info("Models loaded successfully")
+
+    # Ensure BigQuery table schema
     ensure_table_schema()
 
 class ProductData(BaseModel):
-    """Pydantic model for incoming product data."""
     product_url: str
     hierarchy: str
     product_name: str
@@ -115,9 +246,8 @@ class ProductData(BaseModel):
 
 @app.post("/predict")
 def predict(products: List[ProductData]):
-    """Endpoint to make predictions and store results in BigQuery."""
     try:
-        # Define column mapping for BigQuery compatibility
+        # Convert product data to dictionary and rename fields for BigQuery
         column_mapping = {
             'product_url': 'Product URL',
             'hierarchy': 'Hierarchy',
@@ -136,7 +266,7 @@ def predict(products: List[ProductData]):
             'original_height': 'Original Height',
             'original_final_weights_in_grams': 'Original Final Weights in Grams',
         }
-        
+
         # Prepare data for prediction
         data = [p.dict() for p in products]
         df = pd.DataFrame(data)
@@ -147,24 +277,23 @@ def predict(products: List[ProductData]):
         labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
         results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
 
-        # Prepare rows for BigQuery insertion
+        # Prepare data for BigQuery
         bq_rows = [
             {
-                column_mapping[k]: v for k, v in product.dict().items() if k in column_mapping
+                column_mapping.get(k, k): v for k, v in product.dict().items()
             } | {
                 "prediction": result["prediction"],
                 "probability": result["probability"],
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat()
             }
             for product, result in zip(products, results)
         ]
 
-        # Insert data into BigQuery
+        # Insert into BigQuery
         table_id = f"{bigquery_client.project}.anomaly_detection.predictions"
         errors = bigquery_client.insert_rows_json(table_id, bq_rows)
         if errors:
             logger.error(f"Errors inserting rows into BigQuery: {errors}")
-            raise Exception(f"BigQuery insertion failed: {errors}")
         else:
             logger.info(f"Successfully inserted {len(bq_rows)} rows into {table_id}")
 
