@@ -20,18 +20,16 @@ logger = logging.getLogger(__name__)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-0c4956e384ac.json")
 
-# Verify the service account key file exists
 if not os.path.exists(credentials_path):
     logger.error(f"Service account key file not found at: {credentials_path}")
     raise FileNotFoundError(f"Service account key file not found: {credentials_path}")
 
-# Load credentials from the service account key file
 credentials = service_account.Credentials.from_service_account_file(credentials_path)
 bigquery_client = bigquery.Client(credentials=credentials, project='circular-hawk-459707-b8')
 
-# Define the BigQuery table schema (already updated as per your input)
+# Define the BigQuery table schema as per user requirements
 desired_schema = [
-    bigquery.SchemaField("Product URL", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("Product URL", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("Hierarchy", "STRING", mode="NULLABLE"),
     bigquery.SchemaField("Product Name", "STRING", mode="NULLABLE"),
     bigquery.SchemaField("Detail Product Title", "STRING", mode="NULLABLE"),
@@ -47,9 +45,9 @@ desired_schema = [
     bigquery.SchemaField("Original Width", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("Original Height", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("Original Final Weights in Grams", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("prediction", "STRING", mode="NULLABLE"),
-    bigquery.SchemaField("probability", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("timestamp", "TIMESTAMP", mode="NULLABLE"),
+    bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
+    bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
 ]
 
 def ensure_table_schema():
@@ -89,7 +87,7 @@ def load_models():
     model = xgb.XGBClassifier()
     model.load_model('xgb_model.json')
     logger.info("Models loaded successfully")
-    ensure_table_schema()  # Ensure the table schema is correct on startup
+    ensure_table_schema()
 
 class ProductData(BaseModel):
     """Pydantic model for incoming product data."""
