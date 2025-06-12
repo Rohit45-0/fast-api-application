@@ -273,8 +273,8 @@ def predict(products: List[ProductData]):
         df_processed = pipeline.transform(df)
         predictions = model.predict(df_processed)
         probabilities = model.predict_proba(df_processed)[:, 1]
-        labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
-        results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
+       # labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
+        results = [{"prediction": predictions, "probability": float(prob)} for predictions, prob in zip(predictions, probabilities)]
 
         # Prepare data for BigQuery with all input features
         bq_rows = [
