@@ -156,7 +156,7 @@ if not os.path.exists(credentials_path):
 credentials = service_account.Credentials.from_service_account_file(credentials_path)
 bigquery_client = bigquery.Client(credentials=credentials, project='circular-hawk-459707-b8')
 
-# Define the BigQuery table schema with all input features
+# Define the BigQuery table schema without diff_ features and with is_update
 desired_schema = [
     bigquery.SchemaField("product_url", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("hierarchy", "STRING", mode="NULLABLE"),
@@ -174,14 +174,10 @@ desired_schema = [
     bigquery.SchemaField("original_width", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("original_height", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("original_final_weights_in_grams", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("diff_price", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("diff_length", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("diff_width", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("diff_height", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("diff_weight", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+    bigquery.SchemaField("is_update", "BOOLEAN", mode="NULLABLE"),
 ]
 
 def create_table_if_not_exists():
@@ -280,7 +276,7 @@ def predict(products: List[ProductData]):
         labels = ['No Anomaly' if prob < threshold else 'anomaly' for prob in probabilities]
         results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
 
-        # Prepare data for BigQuery with all input features
+        # Prepare data for BigQuery without diff_ features and with is_update
         bq_rows = [
             {
                 "product_url": product.product_url,
@@ -299,14 +295,10 @@ def predict(products: List[ProductData]):
                 "original_width": product.original_width,
                 "original_height": product.original_height,
                 "original_final_weights_in_grams": product.original_final_weights_in_grams,
-                "diff_price": product.diff_price,
-                "diff_length": product.diff_length,
-                "diff_width": product.diff_width,
-                "diff_height": product.diff_height,
-                "diff_weight": product.diff_weight,
                 "prediction": result["prediction"],
                 "probability": result["probability"],
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "is_update": False
             }
             for product, result in zip(products, results)
         ]
