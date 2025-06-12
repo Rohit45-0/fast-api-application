@@ -179,7 +179,7 @@ desired_schema = [
     bigquery.SchemaField("diff_width", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("diff_height", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("diff_weight", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("prediction", "FLOAT", mode="REQUIRED"),
+    bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
 ]
@@ -271,10 +271,14 @@ def predict(products: List[ProductData]):
         }
         df.rename(columns=column_mapping, inplace=True)
         df_processed = pipeline.transform(df)
-        predictions = model.predict(df_processed)
+        
+        # Get probabilities instead of binary predictions
         probabilities = model.predict_proba(df_processed)[:, 1]
-       # labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
-        results = [{"prediction": float(predictions), "probability": float(prob)} for predictions, prob in zip(predictions, probabilities)]
+        
+        # Set a custom threshold for anomaly detection
+        threshold = 0.7  # Adjust this value as needed
+        labels = ['No Anomaly' if prob < threshold else 'anomaly' for prob in probabilities]
+        results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
 
         # Prepare data for BigQuery with all input features
         bq_rows = [
