@@ -1,5 +1,3 @@
-import json
-from datetime import datetime
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -11,10 +9,10 @@ import numpy as np
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 from google.oauth2 import service_account
+from datetime import datetime
 import sys
 import os
 import logging
-import pickle
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -134,6 +132,19 @@ class ColumnDropper(BaseEstimator, TransformerMixin):
     def transform(self, X):
         return X.drop(columns=self.columns_to_drop, errors='ignore')
 
+# Register custom classes for unpickling
+custom_classes = [
+    GroupMeanDifference,
+    LogDensityVolumeCalculator,
+    PricePerGramCalculator,
+    AspectRatioCalculator,
+    HierarchyAggregator,
+    ColumnDropper
+]
+for cls in custom_classes:
+    cls.__module__ = '__main__'
+    setattr(sys.modules['__main__'], cls.__name__, cls)
+
 # BigQuery setup
 script_dir = os.path.dirname(os.path.abspath(__file__))
 credentials_path = os.path.join(script_dir, "circular-hawk-459707-b8-0c4956e384ac.json")
@@ -145,52 +156,54 @@ if not os.path.exists(credentials_path):
 credentials = service_account.Credentials.from_service_account_file(credentials_path)
 bigquery_client = bigquery.Client(credentials=credentials, project='circular-hawk-459707-b8')
 
-# Define the BigQuery table schema
+# Define the BigQuery table schema with all input features
 desired_schema = [
-    bigquery.SchemaField("Product URL", "STRING", mode="REQUIRED"),
-    bigquery.SchemaField("Hierarchy", "STRING", mode="NULLABLE"),
-    bigquery.SchemaField("Product Name", "STRING", mode="NULLABLE"),
-    bigquery.SchemaField("Detail Product Title", "STRING", mode="NULLABLE"),
-    bigquery.SchemaField("Price In Dollar", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("ASIN", "STRING", mode="NULLABLE"),
-    bigquery.SchemaField("BRAND Name", "STRING", mode="NULLABLE"),
-    bigquery.SchemaField("Length", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Width", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Height", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Final Weights in Grams", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Original Price In Dollar", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Original Length", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Original Width", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Original Height", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("Original Final Weights in Grams", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("product_url", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("hierarchy", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("product_name", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("detail_product_title", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("price_in_dollar", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("asin", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("brand_name", "STRING", mode="NULLABLE"),
+    bigquery.SchemaField("length", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("width", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("height", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("final_weights_in_grams", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("original_price_in_dollar", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("original_length", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("original_width", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("original_height", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("original_final_weights_in_grams", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("diff_price", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("diff_length", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("diff_width", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("diff_height", "FLOAT", mode="NULLABLE"),
+    bigquery.SchemaField("diff_weight", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
 ]
 
-def ensure_table_schema():
-    """Ensure the BigQuery table exists and matches the desired schema."""
-    table_id = f"{bigquery_client.project}.anomaly_detection.predictions"
+def create_table_if_not_exists():
+    dataset_id = 'anomaly_detection'
+    table_id = 'predictions'
+    full_table_id = f"{bigquery_client.project}.{dataset_id}.{table_id}"
     try:
-        table = bigquery_client.get_table(table_id)
-        current_fields = {field.name for field in table.schema}
-        desired_fields = {field.name for field in desired_schema}
-        missing_fields = desired_fields - current_fields
-
-        if missing_fields:
-            new_schema = table.schema[:]
-            for field_name in missing_fields:
-                field = next(f for f in desired_schema if f.name == field_name)
-                new_schema.append(field)
-            table.schema = new_schema
-            bigquery_client.update_table(table, ["schema"])
-            logger.info(f"Added missing fields to table schema: {missing_fields}")
-        else:
-            logger.info("Table schema is up to date.")
+        bigquery_client.get_table(full_table_id)
+        logger.info(f"Table {full_table_id} already exists.")
     except NotFound:
-        table = bigquery.Table(table_id, schema=desired_schema)
-        bigquery_client.create_table(table)
-        logger.info(f"Created table {table_id} with full schema.")
+        dataset_ref = bigquery_client.dataset(dataset_id)
+        try:
+            bigquery_client.get_dataset(dataset_ref)
+        except NotFound:
+            dataset = bigquery.Dataset(dataset_ref)
+            bigquery_client.create_dataset(dataset)
+            logger.info(f"Created dataset {dataset_id}")
+        table = bigquery.Table(full_table_id, schema=desired_schema)
+        table = bigquery_client.create_table(table)
+        logger.info(f"Created table {full_table_id}")
+
+create_table_if_not_exists()
 
 # FastAPI app
 app = FastAPI()
@@ -200,26 +213,10 @@ model = None
 @app.on_event("startup")
 def load_models():
     global pipeline, model
-
-    # Custom unpickler to handle classes defined in app.py
-    class CustomUnpickler(pickle.Unpickler):
-        def find_class(self, module, name):
-            if module == "__main__":
-                return globals()[name]  # Use app.py's global namespace
-            return super().find_class(module, name)
-
-    # Load the pipeline using the custom unpickler
-    with open('sklearn_preprocessing_pipeline.pkl', 'rb') as f:
-        unpickler = CustomUnpickler(f)
-        pipeline = unpickler.load()
-
-    # Load the XGBoost model
+    pipeline = joblib.load('sklearn_preprocessing_pipeline.pkl')
     model = xgb.XGBClassifier()
     model.load_model('xgb_model.json')
     logger.info("Models loaded successfully")
-
-    # Ensure BigQuery table schema
-    ensure_table_schema()
 
 class ProductData(BaseModel):
     product_url: str
@@ -247,7 +244,8 @@ class ProductData(BaseModel):
 @app.post("/predict")
 def predict(products: List[ProductData]):
     try:
-        # Convert product data to dictionary and rename fields for BigQuery
+        data = [p.dict() for p in products]
+        df = pd.DataFrame(data)
         column_mapping = {
             'product_url': 'Product URL',
             'hierarchy': 'Hierarchy',
@@ -265,23 +263,43 @@ def predict(products: List[ProductData]):
             'original_width': 'Original Width',
             'original_height': 'Original Height',
             'original_final_weights_in_grams': 'Original Final Weights in Grams',
+            'diff_price': 'Diff Price',
+            'diff_length': 'Diff Length',
+            'diff_width': 'Diff Width',
+            'diff_height': 'Diff Height',
+            'diff_weight': 'Diff Weight'
         }
-
-        # Prepare data for prediction
-        data = [p.dict() for p in products]
-        df = pd.DataFrame(data)
-        df_for_prediction = df.rename(columns=column_mapping)
-        df_processed = pipeline.transform(df_for_prediction)
+        df.rename(columns=column_mapping, inplace=True)
+        df_processed = pipeline.transform(df)
         predictions = model.predict(df_processed)
         probabilities = model.predict_proba(df_processed)[:, 1]
         labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
         results = [{"prediction": label, "probability": float(prob)} for label, prob in zip(labels, probabilities)]
 
-        # Prepare data for BigQuery
+        # Prepare data for BigQuery with all input features
         bq_rows = [
             {
-                column_mapping.get(k, k): v for k, v in product.dict().items()
-            } | {
+                "product_url": product.product_url,
+                "hierarchy": product.hierarchy,
+                "product_name": product.product_name,
+                "detail_product_title": product.detail_product_title,
+                "price_in_dollar": product.price_in_dollar,
+                "asin": product.asin,
+                "brand_name": product.brand_name,
+                "length": product.length,
+                "width": product.width,
+                "height": product.height,
+                "final_weights_in_grams": product.final_weights_in_grams,
+                "original_price_in_dollar": product.original_price_in_dollar,
+                "original_length": product.original_length,
+                "original_width": product.original_width,
+                "original_height": product.original_height,
+                "original_final_weights_in_grams": product.original_final_weights_in_grams,
+                "diff_price": product.diff_price,
+                "diff_length": product.diff_length,
+                "diff_width": product.diff_width,
+                "diff_height": product.diff_height,
+                "diff_weight": product.diff_weight,
                 "prediction": result["prediction"],
                 "probability": result["probability"],
                 "timestamp": datetime.utcnow().isoformat()
