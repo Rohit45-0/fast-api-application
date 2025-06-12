@@ -274,7 +274,7 @@ def predict(products: List[ProductData]):
         predictions = model.predict(df_processed)
         probabilities = model.predict_proba(df_processed)[:, 1]
        # labels = ['No Anomaly' if p == 0 else 'anomaly' for p in predictions]
-        results = [{"prediction": predictions, "probability": float(prob)} for predictions, prob in zip(predictions, probabilities)]
+        results = [{"prediction": float(predictions), "probability": float(prob)} for predictions, prob in zip(predictions, probabilities)]
 
         # Prepare data for BigQuery with all input features
         bq_rows = [
