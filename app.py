@@ -177,7 +177,7 @@ desired_schema = [
     bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
     bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
-    bigquery.SchemaField("is_update", "BOOLEAN", mode="NULLABLE"),
+    bigquery.SchemaField("is_updated", "BOOLEAN", mode="NULLABLE"),
 ]
 
 def create_table_if_not_exists():
@@ -298,7 +298,7 @@ def predict(products: List[ProductData]):
                 "prediction": result["prediction"],
                 "probability": result["probability"],
                 "timestamp": datetime.utcnow().isoformat(),
-                "is_update": False
+                "is_updated": False
             }
             for product, result in zip(products, results)
         ]
