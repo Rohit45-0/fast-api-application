@@ -179,7 +179,7 @@ desired_schema = [
     bigquery.SchemaField("diff_width", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("diff_height", "FLOAT", mode="NULLABLE"),
     bigquery.SchemaField("diff_weight", "FLOAT", mode="NULLABLE"),
-    bigquery.SchemaField("prediction", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("prediction", "FLOAT", mode="REQUIRED"),
     bigquery.SchemaField("probability", "FLOAT", mode="REQUIRED"),
     bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
 ]
